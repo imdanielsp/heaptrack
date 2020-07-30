@@ -212,13 +212,16 @@ struct Printer final : public AccumulatedTraceData
 
     void printIp(const InstructionPointer& ip, ostream& out, const size_t indent = 0, bool flameGraph = false) const
     {
-        printIndent(out, indent);
+        out << "{";
+        out << "\"name\": \"";
 
         if (ip.frame.functionIndex) {
             out << prettyFunction(stringify(ip.frame.functionIndex));
         } else {
             out << "0x" << hex << ip.instructionPointer << dec;
         }
+
+        out << "\",";
 
         if (flameGraph) {
             // only print the file name but nothing else
@@ -239,27 +242,26 @@ struct Printer final : public AccumulatedTraceData
             return;
         }
 
-        out << '\n';
-        printIndent(out, indent + 1);
-
+        out << "\"location\": \"";
         if (ip.frame.fileIndex) {
-            out << "at " << stringify(ip.frame.fileIndex) << ':' << ip.frame.line << '\n';
-            printIndent(out, indent + 1);
+            out << stringify(ip.frame.fileIndex) << ':' << ip.frame.line;
         }
 
+        out << "\",";
+
+        out << "\"module\": \"";
         if (ip.moduleIndex) {
-            out << "in " << stringify(ip.moduleIndex);
+            out << stringify(ip.moduleIndex);
         } else {
             out << "in ??";
         }
-        out << '\n';
+        out << "\"";
 
         for (const auto& inlined : ip.inlined) {
-            printIndent(out, indent);
             out << prettyFunction(stringify(inlined.functionIndex)) << '\n';
-            printIndent(out, indent + 1);
             out << "at " << stringify(inlined.fileIndex) << ':' << inlined.line << '\n';
         }
+        out << "}";
     }
 
     void printBacktrace(const TraceIndex traceIndex, ostream& out, const size_t indent = 0,
@@ -281,7 +283,6 @@ struct Printer final : public AccumulatedTraceData
             if (!skipFirst) {
                 printIp(ip, out, indent);
             }
-            skipFirst = false;
 
             if (isStopIndex(ip.frame.functionIndex)) {
                 break;
@@ -293,6 +294,10 @@ struct Printer final : public AccumulatedTraceData
             }
 
             node = findTrace(node.parentIndex);
+            if (!skipFirst && node.ipIndex) {
+                out << ",";
+            }
+            skipFirst = false;
         };
     }
 
@@ -332,25 +337,38 @@ struct Printer final : public AccumulatedTraceData
             return std::abs(l.*member) > std::abs(r.*member);
         };
         sort(mergedAllocations.begin(), mergedAllocations.end(), sortOrder);
-        for (size_t i = 0; i < min(peakLimit, mergedAllocations.size()); ++i) {
+        cout << "[";
+        auto l = min(peakLimit, mergedAllocations.size());
+        for (size_t i = 0; i < l; ++i) {
             auto& allocation = mergedAllocations[i];
             if (!(allocation.*member)) {
                 break;
             }
+            cout << "{";
+            cout << "\"root\":{";
+            cout << "\"info\": \"";
             label(allocation);
-            printIp(allocation.ipIndex, cout);
-
+            cout << "\",";
+            cout << "\"call\":";
+            printIp(allocation.ipIndex, cout, 4);
+            cout << "},\"traces\":[";
             sort(allocation.traces.begin(), allocation.traces.end(), sortOrder);
             int64_t handled = 0;
-            for (size_t j = 0; j < min(subPeakLimit, allocation.traces.size()); ++j) {
+            for (size_t j = 0; j < 1; ++j) {
+                cout << "{";
                 const auto& trace = allocation.traces[j];
                 if (!(trace.*member)) {
                     break;
                 }
+                cout << "\"info\":\"";
                 sublabel(trace);
+                cout << "\",";
                 handled += trace.*member;
+                cout << "\"trace\": [";
                 printBacktrace(trace.traceIndex, cout, 2, true);
+                cout << "]}";
             }
+            cout << "],\"summary\": \"";
             if (allocation.traces.size() > subPeakLimit) {
                 cout << "  and ";
                 if (member == &AllocationData::allocations) {
@@ -358,10 +376,14 @@ struct Printer final : public AccumulatedTraceData
                 } else {
                     cout << formatBytes(allocation.*member - handled);
                 }
-                cout << " from " << (allocation.traces.size() - subPeakLimit) << " other places\n";
+                cout << " from " << (allocation.traces.size() - subPeakLimit) << " other places";
             }
-            cout << '\n';
+            cout << "\"}";
+            if (i != l-1) {
+                cout << ",";
+            }
         }
+        cout << "]";
     }
 
     template <typename T, typename LabelPrinter>
@@ -521,7 +543,7 @@ struct Printer final : public AccumulatedTraceData
 
     void handleDebuggee(const char* command) override
     {
-        cout << "Debuggee command was: " << command << endl;
+        // cout << "Debuggee command was: " << command << endl;
         if (massifOut.is_open()) {
             writeMassifHeader(command);
         }
@@ -664,7 +686,7 @@ int main(int argc, char** argv)
     const bool printAllocs = vm["print-allocators"].as<bool>();
     const bool printTemporary = vm["print-temporary"].as<bool>();
 
-    cout << "reading file \"" << inputFile << "\" - please wait, this might take some time..." << endl;
+    // cout << "reading file \"" << inputFile << "\" - please wait, this might take some time..." << endl;
 
     if (!diffFile.empty()) {
         cout << "reading diff file \"" << diffFile << "\" - please wait, this might take some time..." << endl;
@@ -682,120 +704,126 @@ int main(int argc, char** argv)
 
     data.finalize();
 
-    cout << "finished reading file, now analyzing data:\n" << endl;
+    // cout << "finished reading file, now analyzing data:\n" << endl;
 
+    cout << "{";
     if (printAllocs) {
         // sort by amount of allocations
-        cout << "MOST CALLS TO ALLOCATION FUNCTIONS\n";
+        // cout << "MOST CALLS TO ALLOCATION FUNCTIONS\n";
+        cout << "\"allocations\":";
         data.printAllocations(&AllocationData::allocations,
                               [](const AllocationData& data) {
                                   cout << data.allocations << " calls to allocation functions with "
-                                       << formatBytes(data.peak) << " peak consumption from\n";
+                                       << formatBytes(data.peak) << " peak consumption from";
                               },
                               [](const AllocationData& data) {
                                   cout << data.allocations << " calls with " << formatBytes(data.peak)
-                                       << " peak consumption from:\n";
+                                       << " peak consumption from:";
                               });
-        cout << endl;
+        cout << ",";
     }
 
     if (printPeaks) {
-        cout << "PEAK MEMORY CONSUMERS\n";
+        // cout << "PEAK MEMORY CONSUMERS\n";
+        cout << "\"peaks\":";
         data.printAllocations(&AllocationData::peak,
                               [](const AllocationData& data) {
                                   cout << formatBytes(data.peak) << " peak memory consumed over " << data.allocations
-                                       << " calls from\n";
+                                       << " calls from";
                               },
                               [](const AllocationData& data) {
                                   cout << formatBytes(data.peak) << " consumed over " << data.allocations
-                                       << " calls from:\n";
+                                       << " calls from:";
                               });
-        cout << endl;
+        cout << ",";
     }
 
     if (printLeaks) {
         // sort by amount of leaks
-        cout << "MEMORY LEAKS\n";
+        // cout << "MEMORY LEAKS\n";
+        cout << "\"leaks\":";
         data.printAllocations(&AllocationData::leaked,
                               [](const AllocationData& data) {
                                   cout << formatBytes(data.leaked) << " leaked over " << data.allocations
-                                       << " calls from\n";
+                                       << " calls from";
                               },
                               [](const AllocationData& data) {
                                   cout << formatBytes(data.leaked) << " leaked over " << data.allocations
-                                       << " calls from:\n";
+                                       << " calls from: ";
                               });
-        cout << endl;
+        cout << ",";
     }
 
     if (printTemporary) {
         // sort by amount of temporary allocations
-        cout << "MOST TEMPORARY ALLOCATIONS\n";
+        // cout << "MOST TEMPORARY ALLOCATIONS\n";
+        cout << "\"temporary\":";
         data.printAllocations(&AllocationData::temporary,
                               [](const AllocationData& data) {
                                   cout << data.temporary << " temporary allocations of " << data.allocations
                                        << " allocations in total (" << fixed << setprecision(2)
-                                       << (float(data.temporary) * 100.f / data.allocations) << "%) from\n";
+                                       << (float(data.temporary) * 100.f / data.allocations) << "%) from";
                               },
                               [](const AllocationData& data) {
                                   cout << data.temporary << " temporary allocations of " << data.allocations
                                        << " allocations in total (" << fixed << setprecision(2)
-                                       << (float(data.temporary) * 100.f / data.allocations) << "%) from:\n";
+                                       << (float(data.temporary) * 100.f / data.allocations) << "%) from:";
                               });
-        cout << endl;
     }
+
+    cout << "}";
 
     const double totalTimeS = 0.001 * data.totalTime;
-    cout << "total runtime: " << fixed << totalTimeS << "s.\n"
-         << "calls to allocation functions: " << data.totalCost.allocations << " ("
-         << int64_t(data.totalCost.allocations / totalTimeS) << "/s)\n"
-         << "temporary memory allocations: " << data.totalCost.temporary << " ("
-         << int64_t(data.totalCost.temporary / totalTimeS) << "/s)\n"
-         << "peak heap memory consumption: " << formatBytes(data.totalCost.peak) << '\n'
-         << "peak RSS (including heaptrack overhead): " << formatBytes(data.peakRSS * data.systemInfo.pageSize) << '\n'
-         << "total memory leaked: " << formatBytes(data.totalCost.leaked) << '\n';
+    // cout << "total runtime: " << fixed << totalTimeS << "s.\n"
+    //      << "calls to allocation functions: " << data.totalCost.allocations << " ("
+    //      << int64_t(data.totalCost.allocations / totalTimeS) << "/s)\n"
+    //      << "temporary memory allocations: " << data.totalCost.temporary << " ("
+    //      << int64_t(data.totalCost.temporary / totalTimeS) << "/s)\n"
+    //      << "peak heap memory consumption: " << formatBytes(data.totalCost.peak) << '\n'
+    //      << "peak RSS (including heaptrack overhead): " << formatBytes(data.peakRSS * data.systemInfo.pageSize) << '\n'
+    //      << "total memory leaked: " << formatBytes(data.totalCost.leaked) << '\n';
 
-    if (!printHistogram.empty()) {
-        ofstream histogram(printHistogram, ios_base::out);
-        if (!histogram.is_open()) {
-            cerr << "Failed to open histogram output file \"" << printHistogram << "\"." << endl;
-        } else {
-            for (auto entry : data.sizeHistogram) {
-                histogram << entry.first << '\t' << entry.second << '\n';
-            }
-        }
-    }
+    // if (!printHistogram.empty()) {
+    //     ofstream histogram(printHistogram, ios_base::out);
+    //     if (!histogram.is_open()) {
+    //         cerr << "Failed to open histogram output file \"" << printHistogram << "\"." << endl;
+    //     } else {
+    //         for (auto entry : data.sizeHistogram) {
+    //             histogram << entry.first << '\t' << entry.second << '\n';
+    //         }
+    //     }
+    // }
 
-    if (!printFlamegraph.empty()) {
-        ofstream flamegraph(printFlamegraph, ios_base::out);
-        if (!flamegraph.is_open()) {
-            cerr << "Failed to open flamegraph output file \"" << printFlamegraph << "\"." << endl;
-        } else {
-            for (const auto& allocation : data.allocations) {
-                if (!allocation.traceIndex) {
-                    flamegraph << "??";
-                } else {
-                    data.printFlamegraph(data.findTrace(allocation.traceIndex), flamegraph);
-                }
-                flamegraph << ' ';
-                switch (flamegraphCostType) {
-                case Allocations:
-                    flamegraph << allocation.allocations;
-                    break;
-                case Temporary:
-                    flamegraph << allocation.temporary;
-                    break;
-                case Peak:
-                    flamegraph << allocation.peak;
-                    break;
-                case Leaked:
-                    flamegraph << allocation.leaked;
-                    break;
-                }
-                flamegraph << '\n';
-            }
-        }
-    }
+    // if (!printFlamegraph.empty()) {
+    //     ofstream flamegraph(printFlamegraph, ios_base::out);
+    //     if (!flamegraph.is_open()) {
+    //         cerr << "Failed to open flamegraph output file \"" << printFlamegraph << "\"." << endl;
+    //     } else {
+    //         for (const auto& allocation : data.allocations) {
+    //             if (!allocation.traceIndex) {
+    //                 flamegraph << "??";
+    //             } else {
+    //                 data.printFlamegraph(data.findTrace(allocation.traceIndex), flamegraph);
+    //             }
+    //             flamegraph << ' ';
+    //             switch (flamegraphCostType) {
+    //             case Allocations:
+    //                 flamegraph << allocation.allocations;
+    //                 break;
+    //             case Temporary:
+    //                 flamegraph << allocation.temporary;
+    //                 break;
+    //             case Peak:
+    //                 flamegraph << allocation.peak;
+    //                 break;
+    //             case Leaked:
+    //                 flamegraph << allocation.leaked;
+    //                 break;
+    //             }
+    //             flamegraph << '\n';
+    //         }
+    //     }
+    // }
 
     return 0;
 }
